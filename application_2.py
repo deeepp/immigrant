@@ -42,7 +42,15 @@ def download_image(image_url):
 
         # Open and convert image to grayscale
         image = Image.open(BytesIO(response.content)).convert("L")
-        return image
+        valid_formats = ["JPEG", "PNG", "BMP", "GIF", "TIFF", "WEBP"]
+        if image.format not in valid_formats:
+            print(f"❌ Unsupported image format: {image.format}")
+            return None
+        return image.convert("L")
+
+    except Exception as e:
+        print(f"❌ Image Processing Error: {e}")
+        return None
 
     except Exception as e:
         print(f"❌ Image Processing Error: {e}")
