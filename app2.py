@@ -216,35 +216,6 @@ def translate_text_with_gpt(text, target_language):
     )
     return response.choices[0].message.content.strip()
 
-def process_audio(audio_url):
-    """Downloads and transcribes audio using OpenAI Whisper."""
-    response = requests.get(audio_url, auth=(account_sid, auth_token))
-    if response.status_code != 200:
-        raise Exception("Failed to download audio from Twilio.")
-
-    # Save the file temporarily
-    audio_path = "temp_audio.ogg"
-    with open(audio_path, "wb") as f:
-        f.write(response.content)
-
-    # Convert to WAV format for Whisper
-    audio = AudioSegment.from_file(audio_path)
-    wav_path = "temp_audio.wav"
-    audio.export(wav_path, format="wav")
-
-    # Transcribe using OpenAI Whisper
-    with open(wav_path, "rb") as f:
-        transcript = openai.Audio.transcriptions.create(
-            model="whisper-1",
-            file=f,
-            response_format="text"
-        )
-
-    # Cleanup temporary files
-    os.remove(audio_path)
-    os.remove(wav_path)
-
-    return transcript.strip()
 
 def extract_dates_and_headings_with_gpt(text):
     prompt = f"""
