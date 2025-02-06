@@ -13,11 +13,18 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from pydub import AudioSegment
-import openai
+from openai import OpenAI
+
+client = OpenAI()
 from gtts import gTTS
 import pickle
-from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.vectorstores import FAISS
+from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+import requests
+from openai import OpenAI
+
+client = OpenAI()
+from pydub import AudioSegment
 
 
 analyzer = AnalyzerEngine()
@@ -35,13 +42,13 @@ app = Flask(__name__)
 # Dictionary to store user state and summaries
 user_state = {}
 user_summaries = {}
-ngrokurl = "https://cb47-2607-fb91-320b-10bd-d488-d5d8-e2f7-5928.ngrok-free.app"
+ngrokurl = "https://4329-216-165-95-191.ngrok-free.app"
 os.makedirs('audio_files', exist_ok=True)
 
 @app.route('/audio_files/<filename>')
 def serve_audio(filename):
     file_path = f"audio_files/{filename}"
-    
+
     # Check if the file exists
     if not os.path.exists(file_path):
         return f"File {filename} not found", 404
@@ -76,7 +83,7 @@ def serve_audio(filename):
 def webhook():
     incoming_msg = request.form.get("Body", "").strip().lower()
     sender = request.form.get("From")
-    media_url = request.form.get("MediaUrl0")  # First media file (image/audio)
+    media_url = request.form.get("MediaUrl0")  # First media file (audio/image)
     media_type = request.form.get("MediaContentType0", "").lower()  # Media type (audio/image)
 
     response = MessagingResponse()
@@ -94,6 +101,24 @@ def webhook():
         response.message("Welcome! Please select an option:\n1️⃣ Resources\n2️⃣ Document Processing\n3️⃣ Housing Groups\n🎙️ You can also send a voice note to chat!")
         return str(response)
 
+    # Process audio if received
+    if media_url and media_type.startswith("audio"):
+        print(f"Received audio URL: {media_url}")
+
+        try:
+            # Transcribe audio
+            transcription = audio_to_text(media_url)
+            print(f"Transcription: {transcription}")
+
+            # Send transcription response
+            response.message(f"Transcription: {transcription}")
+
+            return str(response)
+        except Exception as e:
+            print(f"Error transcribing audio: {e}")
+            response.message("❌ Failed to transcribe audio. Please try again.")
+            return str(response)
+
     # Main Menu Handling
     if user_state[sender] == "main_menu":
         main_menu_msg = "Welcome! Please select an option:\n1️⃣ Resources\n2️⃣ Document Processing\n3️⃣ Housing Groups\n🎙️ Send a voice note for help!"
@@ -105,7 +130,7 @@ def webhook():
         user_state[sender] = "waiting_for_selection"
         return str(response)
 
-    # User Selection Handling
+    # Additional logic for selections
     if user_state[sender] == "waiting_for_selection":
         if incoming_msg == "1":
             resources_text = "Here are some useful resources:\n- Visa Info: [link]\n- Job Search Tips: [link]\n- Legal Assistance: [link]"
@@ -128,34 +153,9 @@ def webhook():
             response.message("Invalid selection. Please choose 1, 2, or 3.")
         return str(response)
 
-    # Additional handling for image or other types of content
-    if user_state[sender] == "waiting_for_image":
-        if not media_url or not media_type.startswith("image"):
-            response.message("No image detected. Please send a document image or type 'menu' to go back.")
-            return str(response)
+    return str(response)
 
-        try:
-            extracted_text = extract_text_from_image(media_url)
-            if not extracted_text.strip():
-                raise ValueError("No text extracted from the image.")
-            
-            # Summarizing and converting to audio
-            summarized_text = summarize_text_with_gpt(extracted_text)
-            response.message(f"Summary: {summarized_text}")
-            audio_file_summary = text_to_audio(summarized_text, "summary.mp3")
-            media_url = f"{ngrokurl}/audio_files/summary.mp3"
-            response.message("Audio:", media_url=media_url)
 
-            # Storing user summary and updating state
-            user_summaries[sender] = summarized_text
-            user_state[sender] = "waiting_for_translation"
-
-        except Exception as e:
-            print(f"Error processing image: {e}")
-            response.message("❌ Failed to process the image. Ensure it's a clear document and try again.")
-            user_state[sender] = "main_menu"
-        return str(response)
-    
 
 
 def extract_text_from_image(image_url):
@@ -181,7 +181,7 @@ def extract_text_from_image(image_url):
         # ✅ Try OCR Extraction
         text = pytesseract.image_to_string(image)
         print(f"📝 Extracted Text: {text[:300]}")  # Print first 300 characters for debugging
-        
+
         if not text.strip():
             raise ValueError("❌ No text detected in the image.")
 
@@ -264,76 +264,6 @@ def extract_dates_and_headings_with_gpt(text):
     )
     return response.choices[0].message.content.strip()
 
-def split_document(text, chunk_size=500, chunk_overlap=50):
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size, 
-        chunk_overlap=chunk_overlap, 
-        separators=["\n\n", "\n", " ", ""]
-    )
-    return text_splitter.split_text(text)
-
-def store_embeddings(chunks):
-    embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")  
-    vectorstore = FAISS.from_texts(chunks, embedding=embeddings)  
-    return vectorstore
-
-def retrieve_relevant_chunks(query, vectorstore, top_k=3):
-    retrieved_docs = vectorstore.similarity_search(query, k=top_k)
-    return [doc.page_content for doc in retrieved_docs]
-
-def generate_response(query, relevant_chunks):
-    context = "\n".join(relevant_chunks)
-    prompt = f"Context:\n{context}\n\nQuestion: {query}\nAnswer:"
-    
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "system", "content": "You are a helpful AI assistant."},
-                  {"role": "user", "content": prompt}],
-        temperature=0.7,
-    )
-    return response.choices[0].message.content.strip()
-
-@app.route("/query", methods=["POST"])
-def text_query():
-    incoming_msg = request.form.get("Body", "").strip()
-    vectorstore = load_faiss_vectorstore()  # Load stored embeddings
-    relevant_chunks = retrieve_relevant_chunks(incoming_msg, vectorstore)
-    response_text = generate_response(incoming_msg, relevant_chunks)
-    
-    response = MessagingResponse()
-    response.message(response_text)
-    return str(response)
-
-@app.route("/audio_query", methods=["POST"])
-def audio_query():
-    media_url = request.form.get("MediaUrl0")
-    media_type = request.form.get("MediaContentType0", "").lower()
-    response = MessagingResponse()
-
-    if media_url and media_type.startswith("audio"):
-        try:
-            transcribed_text = process_audio(media_url)
-            vectorstore = load_faiss_vectorstore()  # Load stored embeddings
-            relevant_chunks = retrieve_relevant_chunks(transcribed_text, vectorstore)
-            rag_response = generate_response(transcribed_text, relevant_chunks)
-            
-            response.message(f"🗣️ Transcribed: {transcribed_text}\n\nResponse: {rag_response}")
-        except Exception as e:
-            response.message("❌ Failed to process audio. Try again.")
-            print(f"Audio Processing Error: {e}")
-    else:
-        response.message("No audio detected. Please send an audio message.")
-    
-    return str(response)
-
-def save_faiss_vectorstore(vectorstore, filepath="vectorstore.pkl"):
-    with open(filepath, "wb") as f:
-        pickle.dump(vectorstore, f)
-
-def load_faiss_vectorstore(filepath="vectorstore.pkl"):
-    with open(filepath, "rb") as f:
-        return pickle.load(f)
-    
 
 def text_to_audio(text, filename="audio.mp3"):
     # Use gTTS to convert text to speech and save it in the 'audio_files' directory
@@ -342,6 +272,56 @@ def text_to_audio(text, filename="audio.mp3"):
     tts.save(audio_path)
     return audio_path
 
+import openai
+import os
+import requests
+from pydub import AudioSegment
+
+openai.api_key = os.getenv("OPENAI_API_KEY")  # Set your OpenAI API key here
+
+def audio_to_text(audio_url):
+    """Download an audio file from Twilio and transcribe it using OpenAI Whisper API."""
+    try:
+        # Twilio requires authentication to fetch media
+        twilio_sid = os.getenv("ACCOUNT_SID")  # Store these in environment variables
+        twilio_auth_token = os.getenv("AUTH_TOKEN")
+
+        # Download the audio file with authentication
+        print(f"Fetching audio from: {audio_url}")  # Log URL for debugging
+        response = requests.get(audio_url, auth=(twilio_sid, twilio_auth_token))
+
+        if response.status_code != 200:
+            print(f"Failed to download audio. Status code: {response.status_code}, Response: {response.text}")
+            return "Failed to download audio."
+
+        # Save the audio file temporarily
+        audio_path = "temp_audio.ogg"
+        with open(audio_path, "wb") as f:
+            f.write(response.content)
+
+        # Convert to WAV format (Whisper API prefers WAV)
+        audio = AudioSegment.from_file(audio_path)
+        wav_path = "temp_audio.wav"
+        audio.export(wav_path, format="wav")
+
+        # Transcribe using OpenAI Whisper
+        with open(wav_path, "rb") as f:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",  # Specify the model for transcription
+                file=f,
+                response_format="text"  # Get the response as plain text
+            )
+            print(transcript)
+
+        # Clean up files
+        os.remove(audio_path)
+        os.remove(wav_path)
+
+        return transcript  # The transcript is returned as plain text
+
+    except Exception as e:
+        print(f"Error in transcription: {e}")
+        return f"Error in transcription: {e}"
 
 
 if __name__ == "__main__":
